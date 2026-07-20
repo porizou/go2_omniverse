@@ -1,8 +1,10 @@
 # Copyright (c) 2024, RoboVerse community
 # SPDX-License-Identifier: BSD-2-Clause
 
+import json
 import struct
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -17,10 +19,58 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import PointCloud2, PointField, Imu
 
 from isaaclab.sensors import CameraCfg, Camera
-from isaacsim.sensors.rtx import LidarRtx
+import omni
 import omni.replicator.core as rep
+from pxr import Gf
 from scipy.spatial.transform import Rotation
 import isaaclab.sim as sim_utils
+
+
+_L1_PROFILE_PATH = Path(__file__).parent / "Isaac_sim" / "Unitree" / "Unitree_L1.json"
+_LIDAR_PUBLISH_PERIOD_S = 0.1  # 10 Hz keeps remote RViz responsive.
+
+
+def _load_l1_attributes():
+    """Translate the legacy L1 JSON profile into Isaac Sim 5.1 OmniLidar attributes.
+
+    Isaac Sim 5.x renders RTX Lidars with an ``OmniLidar`` prim; it no longer
+    consumes the camera-era JSON profile directly.  Keeping the source profile
+    in the repository makes the calibrated emitter pattern available to both
+    the legacy setup and the 5.1 attribute-based sensor.
+    """
+    with _L1_PROFILE_PATH.open(encoding="utf-8") as profile_file:
+        profile = json.load(profile_file)["profile"]
+
+    attributes = {
+        "omni:sensor:Core:scanType": profile["scanType"].upper(),
+        "omni:sensor:Core:intensityProcessing": profile["intensityProcessing"].upper(),
+        "omni:sensor:Core:rayType": profile["rayType"].upper(),
+        "omni:sensor:Core:nearRangeM": profile["nearRangeM"],
+        "omni:sensor:Core:farRangeM": profile["farRangeM"],
+        "omni:sensor:Core:validStartAzimuthDeg": profile["startAzimuthDeg"],
+        "omni:sensor:Core:validEndAzimuthDeg": profile["endAzimuthDeg"],
+        "omni:sensor:Core:rangeResolutionM": profile["rangeResolutionM"],
+        "omni:sensor:Core:rangeAccuracyM": profile["rangeAccuracyM"],
+        "omni:sensor:Core:avgPowerW": profile["avgPowerW"],
+        "omni:sensor:Core:minReflectance": profile["minReflectance"],
+        "omni:sensor:Core:minReflectionRangeM": profile["minReflectanceRange"],
+        "omni:sensor:Core:waveLengthNm": profile["wavelengthNm"],
+        "omni:sensor:Core:pulseTimeNs": profile["pulseTimeNs"],
+        "omni:sensor:Core:azimuthErrorMean": profile["azimuthErrorMean"],
+        "omni:sensor:Core:azimuthErrorStd": profile["azimuthErrorStd"],
+        "omni:sensor:Core:elevationErrorMean": profile["elevationErrorMean"],
+        "omni:sensor:Core:elevationErrorStd": profile["elevationErrorStd"],
+        "omni:sensor:Core:maxReturns": profile["maxReturns"],
+        "omni:sensor:Core:scanRateBaseHz": profile["scanRateBaseHz"],
+        "omni:sensor:Core:reportRateBaseHz": profile["reportRateBaseHz"],
+        "omni:sensor:Core:numberOfEmitters": profile["numberOfEmitters"],
+        "omni:sensor:Core:numberOfChannels": profile["numberOfEmitters"],
+        "omni:sensor:Core:intensityMappingType": profile["intensityMappingType"],
+        "omni:sensor:Core:emitterState:s001:azimuthDeg": profile["emitters"]["azimuthDeg"],
+        "omni:sensor:Core:emitterState:s001:elevationDeg": profile["emitters"]["elevationDeg"],
+        "omni:sensor:Core:emitterState:s001:fireTimeNs": profile["emitters"]["fireTimeNs"],
+    }
+    return attributes
 
 
 def _to_numpy(arr):
@@ -38,10 +88,13 @@ def _to_numpy(arr):
 
 
 def update_meshes_for_cloud2(position_array, origin, rot):
-    q = rot.cpu().numpy()
+    # LidarRtx returns numpy arrays on Isaac Sim 5.1.  The robot state can be
+    # either a torch tensor or a numpy array, depending on the Isaac Lab build.
+    q = _to_numpy(rot)
+    origin = _to_numpy(origin)
     rotation = Rotation.from_quat([q[1], q[2], q[3], q[0]])
     rotated_vectors = rotation.apply(position_array)
-    rotated_vectors += origin.cpu().numpy()
+    rotated_vectors += origin
     rotated_vectors += [0.0, 0.0, 0.4]
     return rotated_vectors
 
@@ -69,31 +122,46 @@ def _create_point_cloud2(header, points):
 
 
 def add_rtx_lidar(num_envs, robot_type, debug=False):
-    annotator_lst = []
+    annotators = []
+    lidar_attributes = _load_l1_attributes()
     for i in range(num_envs):
         if robot_type == "g1":
-            lidar_sensor = LidarRtx(f'/World/envs/env_{i}/Robot/head_link/lidar_sensor',
-                                    rotation_frequency=200,
-                                    pulse_time=1,
-                                    translation=(0.0, 0.0, 0.0),
-                                    orientation=(1.0, 0.0, 0.0, 0.0),
-                                    config_file_name="Unitree_L1")
+            parent = f'/World/envs/env_{i}/Robot/head_link'
+            translation = Gf.Vec3d(0.0, 0.0, 0.0)
         else:
-            lidar_sensor = LidarRtx(f'/World/envs/env_{i}/Robot/base/lidar_sensor',
-                                    rotation_frequency=200,
-                                    pulse_time=1,
-                                    translation=(0.0, 0, 0.4),
-                                    orientation=(1.0, 0.0, 0.0, 0.0),
-                                    config_file_name="Unitree_L1")
+            parent = f'/World/envs/env_{i}/Robot/base'
+            translation = Gf.Vec3d(0.0, 0.0, 0.4)
 
+        # LidarRtx always passes parent=None to the creation command.  Use the
+        # command directly so the OmniLidar is parented to the moving robot.
+        _, lidar_prim = omni.kit.commands.execute(
+            "IsaacSensorCreateRtxLidar",
+            path="/lidar_sensor",
+            parent=parent,
+            translation=translation,
+            orientation=Gf.Quatd(1.0, 0.0, 0.0, 0.0),
+            config=None,
+            variant=None,
+            force_camera_prim=False,
+            **lidar_attributes,
+        )
+        # Isaac Sim 5.1 can sanitize the child name produced by the RTX
+        # creation command (for example, to ``World_envs_..._lidar_sensor``).
+        # Rename the returned prim explicitly so the sensor has the stable,
+        # human-readable path expected by this project.
+        lidar_path = f"{parent}/lidar_sensor"
+        created_path = lidar_prim.GetPath().pathString
+        if created_path != lidar_path:
+            omni.kit.commands.execute("MovePrim", path_from=created_path, path_to=lidar_path)
+            lidar_prim = omni.usd.get_context().get_stage().GetPrimAtPath(lidar_path)
+        render_product = rep.create.render_product(lidar_prim.GetPath(), [1, 1], name="Isaac")
+        annotator = rep.AnnotatorRegistry.get_annotator("IsaacCreateRTXLidarScanBuffer")
+        annotator.attach(render_product)
         if debug:
-            writer = rep.writers.get("RtxLidar" + "DebugDrawPointCloudBuffer")
-            writer.attach([lidar_sensor.get_render_product_path()])
-
-        annotator = rep.AnnotatorRegistry.get_annotator("RtxSensorCpuIsaacCreateRTXLidarScanBuffer")
-        annotator.attach(lidar_sensor.get_render_product_path())
-        annotator_lst.append(annotator)
-    return annotator_lst
+            writer = rep.writers.get("RtxLidarDebugDrawPointCloudBuffer")
+            writer.attach([render_product])
+        annotators.append(annotator)
+    return annotators
 
 
 def add_camera(num_envs, robot_type):
@@ -141,16 +209,17 @@ def pub_robo_data_ros2(robot_type, num_envs, base_node, env, annotator_lst, star
             ], i)
 
         try:
-            if (time.time() - start_time) > 1 / 20:
+            if (time.monotonic() - start_time) >= _LIDAR_PUBLISH_PERIOD_S:
                 for j in range(num_envs):
                     data = annotator_lst[j].get_data()
                     point_cloud = update_meshes_for_cloud2(
                         data['data'], root_state[j, :3], root_state[j, 3:7]
                     )
                     base_node.publish_lidar(point_cloud, j)
-                start_time = time.time()
+                start_time = time.monotonic()
         except Exception:
             pass
+    return start_time
 
 
 class RobotBaseNode(Node):

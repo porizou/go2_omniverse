@@ -8,18 +8,21 @@ set -euo pipefail
 # ROS 2 bridge extension ships an internal Jazzy (rclpy + msg libs) matching
 # Python 3.11 — this script points the loader at those libraries.
 
-export ISAAC_VENV="${ISAAC_VENV:-$HOME/Sim/isaac-sim-venv}"
-export ISAACLAB_PATH="${ISAACLAB_PATH:-$HOME/Sim/IsaacLab}"
+#export ISAAC_VENV="${ISAAC_VENV:-$HOME/Sim/isaac-sim-venv}"
+#export ISAACLAB_PATH="${ISAACLAB_PATH:-$HOME/Sim/IsaacLab}"
+export ISAAC_VENV="${ISAAC_VENV:-$HOME/isaacsim/env_isaaclab}"
+export ISAACLAB_PATH="${ISAACLAB_PATH:-$HOME/isaacsim/IsaacLab}"
 export OMNI_KIT_ACCEPT_EULA=YES
-
+export LIVESTREAM=2
+export ENABLE_CAMERAS=1
 export ROS_DISTRO=jazzy
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Activate Isaac Sim venv (Python 3.11, isaacsim 5.0, isaaclab 0.54.3)
-source "$ISAAC_VENV/bin/activate"
-
+#source "$ISAAC_VENV/bin/activate"
+source /home/h-mori/isaacsim/env_isaaclab/bin/activate
 # ponytail: Isaac 5.x moved the bundled ROS 2 libs from isaacsim.ros2.bridge -> isaacsim.ros2.core.
 # Pick whichever ext actually has $ROS_DISTRO/lib so this works across Isaac versions.
 ISAAC_ROS2_EXT="$(python -c "import isaacsim, os; b=os.path.dirname(isaacsim.__file__); d=os.environ['ROS_DISTRO']; print(next(os.path.join(b,'exts',e) for e in ('isaacsim.ros2.core','isaacsim.ros2.bridge') if os.path.isdir(os.path.join(b,'exts',e,d,'lib'))))")"

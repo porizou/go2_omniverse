@@ -425,8 +425,9 @@ def run_sim():
         twin = TwinbotSubscriber(env)
         _ckpt("TwinbotSubscriber ready — waiting for /real_dog/joint_states")
 
-    # Lidar disabled pending Unitree_L1.json update for Isaac Sim 5.0 schema.
-    annotator_lst = []
+    # Unitree L1 is created as an Isaac Sim 5.1 OmniLidar in ros2.py.
+    annotator_lst = add_rtx_lidar(env_cfg.scene.num_envs, args_cli.robot, debug=True)
+    _ckpt("RTX L1 lidar added")
     try:
         add_camera(env_cfg.scene.num_envs, args_cli.robot)
         _ckpt("camera added")
@@ -446,7 +447,7 @@ def run_sim():
         simulation_app.close()
         return
 
-    start_time = time.time()
+    start_time = time.monotonic()
     # simulate environment
     while simulation_app.is_running():
         with torch.inference_mode():
@@ -456,5 +457,7 @@ def run_sim():
                 # Overwrite physics-stepped state with the real dog's state.
                 # Kinematic playback — bypasses PD/gravity for an exact mirror.
                 twin.apply(device)
-            pub_robo_data_ros2(args_cli.robot, env_cfg.scene.num_envs, base_node, env, annotator_lst, start_time)
+            start_time = pub_robo_data_ros2(
+                args_cli.robot, env_cfg.scene.num_envs, base_node, env, annotator_lst, start_time
+            )
     env.close()
