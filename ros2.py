@@ -9,7 +9,6 @@ import numpy as np
 import omni
 import omni.replicator.core as rep
 import isaaclab.sim as sim_utils
-from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
 from pxr import Gf
 from rclpy.node import Node
@@ -17,7 +16,6 @@ from rclpy.qos import QoSProfile
 from sensor_msgs_py import point_cloud2
 from sensor_msgs.msg import Imu, JointState, PointCloud2, PointField
 from std_msgs.msg import Float32MultiArray, Header
-from tf2_msgs.msg import TFMessage
 
 from isaaclab.sensors import Camera, CameraCfg
 
@@ -25,7 +23,6 @@ from isaaclab.sensors import Camera, CameraCfg
 _L1_PROFILE_PATH = Path(__file__).parent / "Isaac_sim" / "Unitree" / "Unitree_L1.json"
 _LIDAR_PUBLISH_PERIOD_S = 0.1
 _GO2_LIDAR_Z_M = 0.4
-_LAST_LOOP_DEBUG_S = 0.0
 _LAST_LIDAR_PUBLISH_S = None
 
 
@@ -163,23 +160,15 @@ def add_camera(num_envs, robot_type):
 
 
 def pub_robo_data_ros2(robot_type, num_envs, base_node, env, annotator_lst, start_time):
-    global _LAST_LOOP_DEBUG_S, _LAST_LIDAR_PUBLISH_S
+    global _LAST_LIDAR_PUBLISH_S
     robot_data = env.unwrapped.scene["robot"].data
     joint_pos = _to_numpy(robot_data.joint_pos)
     root_state = _to_numpy(robot_data.root_state_w)
     lin_vel_b = _to_numpy(robot_data.root_lin_vel_b)
     ang_vel_b = _to_numpy(robot_data.root_ang_vel_b)
 
-    now = time.monotonic()
     if _LAST_LIDAR_PUBLISH_S is None:
-        _LAST_LIDAR_PUBLISH_S = now
-    if now - _LAST_LOOP_DEBUG_S >= 1.0:
-        print(
-            f"[go2_omniverse] loop heartbeat num_envs={num_envs} annotators={len(annotator_lst)} "
-            f"elapsed_since_lidar={now - _LAST_LIDAR_PUBLISH_S:.3f}",
-            flush=True,
-        )
-        _LAST_LOOP_DEBUG_S = now
+        _LAST_LIDAR_PUBLISH_S = time.monotonic()
 
     for i in range(num_envs):
         base_node.publish_joints(robot_data.joint_names, joint_pos[i], i)
@@ -200,16 +189,8 @@ def pub_robo_data_ros2(robot_type, num_envs, base_node, env, annotator_lst, star
 
         try:
             if (time.monotonic() - _LAST_LIDAR_PUBLISH_S) >= _LIDAR_PUBLISH_PERIOD_S:
-                print("[go2_omniverse] entering lidar publish branch", flush=True)
                 for j in range(num_envs):
-                    print(f"[go2_omniverse] before annotator.get_data robot={j}", flush=True)
                     data = annotator_lst[j].get_data()
-                    print(
-                        "[go2_omniverse] lidar raw "
-                        f"robot={j} type={type(data).__name__} "
-                        f"keys={list(data.keys()) if hasattr(data, 'keys') else 'no-keys'}",
-                        flush=True,
-                    )
                     point_cloud = lidar_points_in_sensor_frame(data["data"])
                     base_node.publish_lidar(point_cloud, j)
                 _LAST_LIDAR_PUBLISH_S = time.monotonic()
@@ -240,8 +221,6 @@ class RobotBaseNode(Node):
             self.odom_pub.append(self.create_publisher(Odometry, odom_topic, qos_profile))
             self.imu_pub.append(self.create_publisher(Imu, f"robot{i}/imu", qos_profile))
 
-        self.tf_pub = self.create_publisher(TFMessage, "/tf", qos_profile)
-
     def _base_frame(self, robot_num):
         return "base_link" if robot_num == 0 else f"robot{robot_num}/base_link"
 
@@ -257,19 +236,6 @@ class RobotBaseNode(Node):
 
     def publish_odom(self, base_pos, base_rot, robot_num):
         base_frame = self._base_frame(robot_num)
-
-        odom_tf = TransformStamped()
-        odom_tf.header.stamp = self.get_clock().now().to_msg()
-        odom_tf.header.frame_id = "odom"
-        odom_tf.child_frame_id = base_frame
-        odom_tf.transform.translation.x = base_pos[0].item()
-        odom_tf.transform.translation.y = base_pos[1].item()
-        odom_tf.transform.translation.z = base_pos[2].item()
-        odom_tf.transform.rotation.x = base_rot[1].item()
-        odom_tf.transform.rotation.y = base_rot[2].item()
-        odom_tf.transform.rotation.z = base_rot[3].item()
-        odom_tf.transform.rotation.w = base_rot[0].item()
-        self.tf_pub.publish(TFMessage(transforms=[odom_tf]))
 
         odom_topic = Odometry()
         odom_topic.header.stamp = self.get_clock().now().to_msg()
@@ -306,25 +272,7 @@ class RobotBaseNode(Node):
         self.go2_state_pub[robot_num].publish(msg)
 
     def publish_lidar(self, points, robot_num):
-        lidar_tf = TransformStamped()
-        lidar_tf.header.stamp = self.get_clock().now().to_msg()
-        lidar_tf.header.frame_id = self._base_frame(robot_num)
-        lidar_tf.child_frame_id = self._lidar_frame(robot_num)
-        lidar_tf.transform.translation.x = 0.0
-        lidar_tf.transform.translation.y = 0.0
-        lidar_tf.transform.translation.z = _GO2_LIDAR_Z_M
-        lidar_tf.transform.rotation.w = 1.0
-        self.tf_pub.publish(TFMessage(transforms=[lidar_tf]))
-
         header = Header(frame_id=self._lidar_frame(robot_num))
         header.stamp = self.get_clock().now().to_msg()
         msg = _create_point_cloud2(header, points)
-        print(
-            "[go2_omniverse] lidar cooked "
-            f"robot={robot_num} shape={np.asarray(points).shape} "
-            f"dtype={np.asarray(points).dtype} width={msg.width} "
-            f"point_step={msg.point_step} row_step={msg.row_step} "
-            f"data_len={len(msg.data)}",
-            flush=True,
-        )
         self.go2_lidar_pub[robot_num].publish(msg)
