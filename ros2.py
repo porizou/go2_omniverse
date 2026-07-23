@@ -13,6 +13,7 @@ from nav_msgs.msg import Odometry
 from pxr import Gf
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
+from rosgraph_msgs.msg import Clock
 from sensor_msgs_py import point_cloud2
 from sensor_msgs.msg import Imu, JointState, PointCloud2, PointField
 from std_msgs.msg import Float32MultiArray, Header
@@ -159,7 +160,7 @@ def add_camera(num_envs, robot_type):
         Camera(camera_cfg)
 
 
-def pub_robo_data_ros2(robot_type, num_envs, base_node, env, annotator_lst, start_time):
+def pub_robo_data_ros2(robot_type, num_envs, base_node, env, annotator_lst, start_time, sim_time_s):
     global _LAST_LIDAR_PUBLISH_S
     robot_data = env.unwrapped.scene["robot"].data
     joint_pos = _to_numpy(robot_data.joint_pos)
@@ -169,6 +170,8 @@ def pub_robo_data_ros2(robot_type, num_envs, base_node, env, annotator_lst, star
 
     if _LAST_LIDAR_PUBLISH_S is None:
         _LAST_LIDAR_PUBLISH_S = time.monotonic()
+
+    base_node.publish_clock(sim_time_s)
 
     for i in range(num_envs):
         base_node.publish_joints(robot_data.joint_names, joint_pos[i], i)
@@ -209,6 +212,7 @@ class RobotBaseNode(Node):
         self.go2_lidar_pub = []
         self.odom_pub = []
         self.imu_pub = []
+        self.clock_pub = self.create_publisher(Clock, "/clock", qos_profile)
 
         for i in range(num_envs):
             self.joint_pub.append(self.create_publisher(JointState, f"robot{i}/joint_states", qos_profile))
@@ -226,6 +230,14 @@ class RobotBaseNode(Node):
 
     def _lidar_frame(self, robot_num):
         return "utlidar_lidar" if robot_num == 0 else f"robot{robot_num}/utlidar_lidar"
+
+    def publish_clock(self, sim_time_s):
+        msg = Clock()
+        sec = int(sim_time_s)
+        nanosec = int((sim_time_s - sec) * 1_000_000_000)
+        msg.clock.sec = sec
+        msg.clock.nanosec = nanosec
+        self.clock_pub.publish(msg)
 
     def publish_joints(self, joint_names_lst, joint_state_lst, robot_num):
         joint_state = JointState()

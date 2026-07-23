@@ -343,7 +343,8 @@ def cmd_vel_cb(msg, num_robot):
 def add_cmd_sub(num_envs):
     node_test = rclpy.create_node('position_velocity_publisher')
     for i in range(num_envs):
-        node_test.create_subscription(Twist, f'robot{i}/cmd_vel', lambda msg, i=i: cmd_vel_cb(msg, str(i)), 10)
+        topic_name = "/cmd_vel" if i == 0 else f"robot{i}/cmd_vel"
+        node_test.create_subscription(Twist, topic_name, lambda msg, i=i: cmd_vel_cb(msg, str(i)), 10)
     # Spin in a separate thread
     thread = threading.Thread(target=rclpy.spin, args=(node_test,), daemon=True)
     thread.start()
@@ -448,6 +449,7 @@ def run_sim():
         return
 
     start_time = time.monotonic()
+    sim_step_dt = float(getattr(env.unwrapped, "step_dt", 1.0 / 60.0))
     # simulate environment
     while simulation_app.is_running():
         with torch.inference_mode():
@@ -458,6 +460,12 @@ def run_sim():
                 # Kinematic playback — bypasses PD/gravity for an exact mirror.
                 twin.apply(device)
             start_time = pub_robo_data_ros2(
-                args_cli.robot, env_cfg.scene.num_envs, base_node, env, annotator_lst, start_time
+                args_cli.robot,
+                env_cfg.scene.num_envs,
+                base_node,
+                env,
+                annotator_lst,
+                start_time,
+                env.unwrapped.common_step_counter * sim_step_dt,
             )
     env.close()
