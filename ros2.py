@@ -91,6 +91,15 @@ def _create_point_cloud2(header, points):
     return point_cloud2.create_cloud_xyz32(header, xyz_points)
 
 
+def _to_ros_time(sim_time_s):
+    sec = int(sim_time_s)
+    nanosec = int((sim_time_s - sec) * 1_000_000_000)
+    if nanosec >= 1_000_000_000:
+        sec += 1
+        nanosec -= 1_000_000_000
+    return sec, nanosec
+
+
 def add_rtx_lidar(num_envs, robot_type, debug=False):
     annotators = []
     lidar_attributes = _load_l1_attributes()
@@ -174,9 +183,9 @@ def pub_robo_data_ros2(robot_type, num_envs, base_node, env, annotator_lst, star
     base_node.publish_clock(sim_time_s)
 
     for i in range(num_envs):
-        base_node.publish_joints(robot_data.joint_names, joint_pos[i], i)
-        base_node.publish_odom(root_state[i, :3], root_state[i, 3:7], i)
-        base_node.publish_imu(root_state[i, 3:7], lin_vel_b[i, :], ang_vel_b[i, :], i)
+        base_node.publish_joints(robot_data.joint_names, joint_pos[i], i, sim_time_s)
+        base_node.publish_odom(root_state[i, :3], root_state[i, 3:7], i, sim_time_s)
+        base_node.publish_imu(root_state[i, 3:7], lin_vel_b[i, :], ang_vel_b[i, :], i, sim_time_s)
 
         if robot_type == "go2":
             net_forces = _to_numpy(env.unwrapped.scene["contact_forces"].data.net_forces_w)
@@ -195,7 +204,7 @@ def pub_robo_data_ros2(robot_type, num_envs, base_node, env, annotator_lst, star
                 for j in range(num_envs):
                     data = annotator_lst[j].get_data()
                     point_cloud = lidar_points_in_sensor_frame(data["data"])
-                    base_node.publish_lidar(point_cloud, j)
+                    base_node.publish_lidar(point_cloud, j, sim_time_s)
                 _LAST_LIDAR_PUBLISH_S = time.monotonic()
         except Exception as exc:
             print(f"[go2_omniverse] lidar publish failed: {exc}", flush=True)
@@ -233,24 +242,27 @@ class RobotBaseNode(Node):
 
     def publish_clock(self, sim_time_s):
         msg = Clock()
-        sec = int(sim_time_s)
-        nanosec = int((sim_time_s - sec) * 1_000_000_000)
+        sec, nanosec = _to_ros_time(sim_time_s)
         msg.clock.sec = sec
         msg.clock.nanosec = nanosec
         self.clock_pub.publish(msg)
 
-    def publish_joints(self, joint_names_lst, joint_state_lst, robot_num):
+    def publish_joints(self, joint_names_lst, joint_state_lst, robot_num, sim_time_s):
         joint_state = JointState()
-        joint_state.header.stamp = self.get_clock().now().to_msg()
+        sec, nanosec = _to_ros_time(sim_time_s)
+        joint_state.header.stamp.sec = sec
+        joint_state.header.stamp.nanosec = nanosec
         joint_state.name = [f"robot{robot_num}/{n}" for n in joint_names_lst]
         joint_state.position = [float(v.item()) for v in joint_state_lst]
         self.joint_pub[robot_num].publish(joint_state)
 
-    def publish_odom(self, base_pos, base_rot, robot_num):
+    def publish_odom(self, base_pos, base_rot, robot_num, sim_time_s):
         base_frame = self._base_frame(robot_num)
 
         odom_topic = Odometry()
-        odom_topic.header.stamp = self.get_clock().now().to_msg()
+        sec, nanosec = _to_ros_time(sim_time_s)
+        odom_topic.header.stamp.sec = sec
+        odom_topic.header.stamp.nanosec = nanosec
         odom_topic.header.frame_id = "odom"
         odom_topic.child_frame_id = base_frame
         odom_topic.pose.pose.position.x = base_pos[0].item()
@@ -262,9 +274,11 @@ class RobotBaseNode(Node):
         odom_topic.pose.pose.orientation.w = base_rot[0].item()
         self.odom_pub[robot_num].publish(odom_topic)
 
-    def publish_imu(self, base_rot, base_lin_vel, base_ang_vel, robot_num):
+    def publish_imu(self, base_rot, base_lin_vel, base_ang_vel, robot_num, sim_time_s):
         imu_msg = Imu()
-        imu_msg.header.stamp = self.get_clock().now().to_msg()
+        sec, nanosec = _to_ros_time(sim_time_s)
+        imu_msg.header.stamp.sec = sec
+        imu_msg.header.stamp.nanosec = nanosec
         imu_msg.header.frame_id = self._base_frame(robot_num)
         imu_msg.linear_acceleration.x = base_lin_vel[0].item()
         imu_msg.linear_acceleration.y = base_lin_vel[1].item()
@@ -283,8 +297,10 @@ class RobotBaseNode(Node):
         msg.data = [float(v.item()) for v in foot_force_lst]
         self.go2_state_pub[robot_num].publish(msg)
 
-    def publish_lidar(self, points, robot_num):
+    def publish_lidar(self, points, robot_num, sim_time_s):
         header = Header(frame_id=self._lidar_frame(robot_num))
-        header.stamp = self.get_clock().now().to_msg()
+        sec, nanosec = _to_ros_time(sim_time_s)
+        header.stamp.sec = sec
+        header.stamp.nanosec = nanosec
         msg = _create_point_cloud2(header, points)
         self.go2_lidar_pub[robot_num].publish(msg)
