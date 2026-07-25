@@ -23,7 +23,10 @@ from isaaclab.sensors import Camera, CameraCfg
 
 _L1_PROFILE_PATH = Path(__file__).parent / "Isaac_sim" / "Unitree" / "Unitree_L1.json"
 _LIDAR_PUBLISH_PERIOD_S = 0.1
-_GO2_LIDAR_Z_M = 0.4
+_GO2_LIDAR_X_M = 0.29515
+_GO2_LIDAR_Y_M = -0.00003
+_GO2_LIDAR_Z_M = -0.06597
+_GO2_LIDAR_PITCH_RAD = -0.2
 _LAST_LIDAR_PUBLISH_S = None
 
 
@@ -109,14 +112,24 @@ def add_rtx_lidar(num_envs, robot_type, debug=False):
             translation = Gf.Vec3d(0.0, 0.0, 0.0)
         else:
             parent = f"/World/envs/env_{i}/Robot/base"
-            translation = Gf.Vec3d(0.0, 0.0, _GO2_LIDAR_Z_M)
+            translation = Gf.Vec3d(_GO2_LIDAR_X_M, _GO2_LIDAR_Y_M, _GO2_LIDAR_Z_M)
+
+        if robot_type == "go2":
+            orientation = Gf.Quatd(
+                float(np.cos(_GO2_LIDAR_PITCH_RAD / 2.0)),
+                0.0,
+                float(np.sin(_GO2_LIDAR_PITCH_RAD / 2.0)),
+                0.0,
+            )
+        else:
+            orientation = Gf.Quatd(1.0, 0.0, 0.0, 0.0)
 
         _, lidar_prim = omni.kit.commands.execute(
             "IsaacSensorCreateRtxLidar",
             path="/lidar_sensor",
             parent=parent,
             translation=translation,
-            orientation=Gf.Quatd(1.0, 0.0, 0.0, 0.0),
+            orientation=orientation,
             config=None,
             variant=None,
             force_camera_prim=False,
