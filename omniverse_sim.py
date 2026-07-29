@@ -215,8 +215,14 @@ def setup_custom_env():
             cfg_scene.func("/World/warehouse", cfg_scene, translation=(0.0, 0.0, 0.0))
 
         if (args_cli.custom_env == "office" and args_cli.terrain == 'flat'):
-            cfg_scene = sim_utils.UsdFileCfg(usd_path="./envs/office.usd")
+            from isaacsim.storage.native import get_assets_root_path
+
+            root = get_assets_root_path() or \
+                "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0"
+            office = f"{root}/Isaac/Environments/Office/office.usd"
+            cfg_scene = sim_utils.UsdFileCfg(usd_path=office)
             cfg_scene.func("/World/office", cfg_scene, translation=(0.0, 0.0, 0.0))
+            _ckpt(f"loaded standard office environment: {office}")
     except:
         print("Error loading custom environment. You should download custom envs folder from: https://drive.google.com/drive/folders/1vVGuO1KIX1K6mD6mBHDZGm9nk2vaRyj3?usp=sharing")
 
